@@ -5,55 +5,64 @@ from lifelines import CoxPHFitter
 from sklearn.linear_model import LogisticRegression
 import json
 
-# Configuration standard : Flask cherche uniquement dans le dossier 'templates'
+# Déclaration standard (sans contournement d'emplacement)
 app = Flask(__name__, template_folder='templates')
 
 def init_models():
     chemin_fichier = "ProjetM2SID2026.xlsx"
     df = pd.read_excel(chemin_fichier, sheet_name="Donnees")
     
-    # 1. Nettoyage des noms de colonnes
+    # Nettoyage des espaces cachés dans les noms de colonnes
     df.columns = df.columns.str.strip()
     
     time_col = "DUREE SUIVI Apres Traitement (mois)"
     event_col = "DECES_NUM"
     
-    # 2. Gestion des valeurs manquantes et encodages
+    # Gestion de la variable cible
     df[time_col] = pd.to_numeric(df[time_col], errors='coerce').fillna(df[time_col].median())
     df[event_col] = df['DECES'].map({'OUI': 1, 'NON': 0}).fillna(0).astype(int)
     
-    def map_column(search_term, new_name, default_val=0):
-        actual_col = [c for c in df.columns if search_term.lower() in c.lower()]
-        if actual_col:
-            df[new_name] = df[actual_col[0]].map({'OUI': 1, 'NON': 0, 'M': 1, 'F': 0})
-            df[new_name] = df[new_name].fillna(df[actual_col[0]]).fillna(default_val).astype(int)
+    # Encodage manuel et sécurisé de chaque colonne obligatoire
+    def securiser_et_encoder(mots_cles, nom_final):
+        colonne_trouvee = None
+        for col in df.columns:
+            if any(mot.lower() in col.lower() for mot in mots_cles):
+                colonne_trouvee = col
+                break
+        
+        if colonne_trouvee:
+            df[nom_final] = df[colonne_trouvee].map({'OUI': 1, 'NON': 0, 'M': 1, 'F': 0})
+            df[nom_final] = df[nom_final].fillna(pd.to_numeric(df[colonne_trouvee], errors='coerce')).fillna(0).astype(int)
         else:
-            df[new_name] = default_val
+            # Si la colonne n'est pas trouvée, on la crée remplie de 0 pour éviter le KeyError
+            df[nom_final] = 0
 
-    map_column('DIABETE', 'DIABETE_NUM', default_val=0)
-    map_column('Metastases Hepatiques', 'Metastases Hepatiques_NUM', default_val=0)
-    map_column('Dénutrition', 'Dénutrition_NUM', default_val=0)
-    map_column('SEXE', 'SEXE_NUM', default_val=1)
-    map_column('chirurgie', 'Traitement par chirurgie_NUM', default_val=1)
+    # Application de l'encodage strict
+    securiser_et_encoder(['diabete'], 'DIABETE_NUM')
+    securiser_et_encoder(['metastase', 'hépatique'], 'Metastases Hepatiques_NUM')
+    securiser_et_encoder(['dénutrition', 'denutrition'], 'Dénutrition_NUM')
+    securiser_et_encoder(['sexe'], 'SEXE_NUM')
+    securiser_et_encoder(['chirurgie', 'traitement'], 'Traitement par chirurgie_NUM')
     
+    # Traitement des variables numériques continues
     df['AGE'] = pd.to_numeric(df['AGE'], errors='coerce').fillna(df['AGE'].mean())
     
     col_hemo = [c for c in df.columns if 'hémoglobine' in c.lower() or 'hemo' in c.lower()]
-    df['hémoglobine'] = pd.to_numeric(df[col_hemo[0]], errors='coerce').fillna(df['hémoglobine'].mean()) if col_hemo else 12.0
+    df['hémoglobine'] = pd.to_numeric(df[col_hemo[0]], errors='coerce').fillna(12.0) if col_hemo else 12.0
     
     col_sympt = [c for c in df.columns if 'sympt' in c.lower() or 'evolution' in c.lower()]
     df["Durée d'evolution des Symptom en Mois"] = pd.to_numeric(df[col_sympt[0]], errors='coerce').fillna(6.0) if col_sympt else 6.0
 
-    # Caractéristiques pour le modèle de Cox
+    # Définition stricte des features pour les modèles
     features_cox = ['AGE', 'SEXE_NUM', 'hémoglobine', "Durée d'evolution des Symptom en Mois", 
                     'DIABETE_NUM', 'Metastases Hepatiques_NUM', 'Dénutrition_NUM', 'Traitement par chirurgie_NUM']
     
-    # --- MODÈLE 1 : COX ---
+    # --- MODÈLE 1 : ENTRAÎNEMENT COX ---
     df_cox = df[features_cox + [time_col, event_col]].copy()
     cph = CoxPHFitter()
     cph.fit(df_cox, duration_col=time_col, event_col=event_col)
     
-    # --- MODÈLE 2 : RÉGRESSION LOGISTIQUE ---
+    # --- MODÈLE 2 : ENTRAÎNEMENT RÉGRESSION LOGISTIQUE ---
     features_ml = ['AGE', 'SEXE_NUM', 'hémoglobine', 'DIABETE_NUM', 'Metastases Hepatiques_NUM', 'Dénutrition_NUM', 'Traitement par chirurgie_NUM']
     X_ml = df[features_ml].copy()
     y_ml = df[event_col].copy()
@@ -63,7 +72,7 @@ def init_models():
     
     return cph, log_reg, features_ml
 
-# Chargement des modèles au démarrage
+# Initialisation globale au lancement
 model_cox, model_lr, features_ml = init_models()
 
 @app.route('/', methods=['GET', 'POST'])
@@ -73,7 +82,6 @@ def home():
     probabilite_ml = None
     
     if request.method == 'POST':
-        # Récupération sécurisée du formulaire
         age = float(request.form.get('age', 65))
         sexe = int(request.form.get('sexe', 1))
         hemo = float(request.form.get('hemo', 11.0))
@@ -83,6 +91,7 @@ def home():
         denutrition = int(request.form.get('denutrition', 0))
         chirurgie = int(request.form.get('chirurgie', 1))
         
+        # Reconstruction sécurisée du vecteur de test
         profil_cox = pd.DataFrame([{
             'AGE': age, 'SEXE_NUM': sexe, 'hémoglobine': hemo,
             "Durée d'evolution des Symptom en Mois": sympt, 'DIABETE_NUM': diabete,
@@ -90,7 +99,7 @@ def home():
             'Traitement par chirurgie_NUM': chirurgie
         }])
         
-        # 1. Prédictions Cox
+        # 1. Calculs Cox
         surv_prob = model_cox.predict_survival_function(profil_cox)
         prediction_data = {
             "labels": list(surv_prob.index.astype(int)),
@@ -98,7 +107,7 @@ def home():
         }
         score_risque = round(float(model_cox.predict_partial_hazard(profil_cox).values[0]), 4)
         
-        # 2. Prédictions Régression Logistique
+        # 2. Calculs Machine Learning
         profil_ml = profil_cox[features_ml]
         probabilite_ml = round(float(model_lr.predict_proba(profil_ml)[0][1]) * 100, 2)
 
