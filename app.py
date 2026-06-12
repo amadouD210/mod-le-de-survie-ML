@@ -4,8 +4,10 @@ import numpy as np
 from lifelines import CoxPHFitter
 from sklearn.linear_model import LogisticRegression
 import json
+import os
 
-app = Flask(__name__)
+# CONFIGURATION SÉCURISÉE : Flask cherche dans 'templates' ET à la racine du projet
+app = Flask(__name__, template_folder=['templates', '.'])
 
 def init_models():
     chemin_fichier = "ProjetM2SID2026.xlsx"
@@ -43,16 +45,16 @@ def init_models():
     col_sympt = [c for c in df.columns if 'sympt' in c.lower() or 'evolution' in c.lower()]
     df["Durée d'evolution des Symptom en Mois"] = pd.to_numeric(df[col_sympt[0]], errors='coerce').fillna(6.0) if col_sympt else 6.0
 
-    # Caractéristiques partagées
+    # Caractéristiques pour Cox
     features_cox = ['AGE', 'SEXE_NUM', 'hémoglobine', "Durée d'evolution des Symptom en Mois", 
                     'DIABETE_NUM', 'Metastases Hepatiques_NUM', 'Dénutrition_NUM', 'Traitement par chirurgie_NUM']
     
-    # --- ENTRAÎNEMENT MODÈLE 1 : COX ---
+    # --- MODÈLE 1 : COX ---
     df_cox = df[features_cox + [time_col, event_col]].copy()
     cph = CoxPHFitter()
     cph.fit(df_cox, duration_col=time_col, event_col=event_col)
     
-    # --- ENTRAÎNEMENT MODÈLE 2 : RÉGRESSION LOGISTIQUE ---
+    # --- MODÈLE 2 : RÉGRESSION LOGISTIQUE ---
     features_ml = ['AGE', 'SEXE_NUM', 'hémoglobine', 'DIABETE_NUM', 'Metastases Hepatiques_NUM', 'Dénutrition_NUM', 'Traitement par chirurgie_NUM']
     X_ml = df[features_ml].copy()
     y_ml = df[event_col].copy()
@@ -62,7 +64,7 @@ def init_models():
     
     return cph, log_reg, features_ml
 
-# Initialisation des deux modèles
+# Initialisation des modèles
 model_cox, model_lr, features_ml = init_models()
 
 @app.route('/', methods=['GET', 'POST'])
@@ -72,16 +74,16 @@ def home():
     probabilite_ml = None
     
     if request.method == 'POST':
+        # Récupération sécurisée du formulaire
         age = float(request.form.get('age', 65))
         sexe = int(request.form.get('sexe', 1))
         hemo = float(request.form.get('hemo', 11.0))
-        sympt = float(request.form.get('sympt', 6))
+        sympt = float(request.form.get('sympt', 6.0))
         diabete = int(request.form.get('diabete', 0))
         metastase = int(request.form.get('metastase', 0))
         denutrition = int(request.form.get('denutrition', 0))
         chirurgie = int(request.form.get('chirurgie', 1))
         
-        # Profil complet pour Cox
         profil_cox = pd.DataFrame([{
             'AGE': age, 'SEXE_NUM': sexe, 'hémoglobine': hemo,
             "Durée d'evolution des Symptom en Mois": sympt, 'DIABETE_NUM': diabete,
@@ -89,7 +91,7 @@ def home():
             'Traitement par chirurgie_NUM': chirurgie
         }])
         
-        # 1. Calculs Cox
+        # 1. Cox
         surv_prob = model_cox.predict_survival_function(profil_cox)
         prediction_data = {
             "labels": list(surv_prob.index.astype(int)),
@@ -97,7 +99,7 @@ def home():
         }
         score_risque = round(float(model_cox.predict_partial_hazard(profil_cox).values[0]), 4)
         
-        # 2. Calculs Régression Logistique (Uniquement sur les colonnes correspondantes)
+        # 2. Régression Logistique
         profil_ml = profil_cox[features_ml]
         probabilite_ml = round(float(model_lr.predict_proba(profil_ml)[0][1]) * 100, 2)
 
