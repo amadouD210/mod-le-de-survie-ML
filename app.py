@@ -4,10 +4,9 @@ import numpy as np
 from lifelines import CoxPHFitter
 from sklearn.linear_model import LogisticRegression
 import json
-import os
 
-# CONFIGURATION SÉCURISÉE : Flask cherche dans 'templates' ET à la racine du projet
-app = Flask(__name__, template_folder=['templates', '.'])
+# Configuration standard : Flask cherche uniquement dans le dossier 'templates'
+app = Flask(__name__, template_folder='templates')
 
 def init_models():
     chemin_fichier = "ProjetM2SID2026.xlsx"
@@ -45,7 +44,7 @@ def init_models():
     col_sympt = [c for c in df.columns if 'sympt' in c.lower() or 'evolution' in c.lower()]
     df["Durée d'evolution des Symptom en Mois"] = pd.to_numeric(df[col_sympt[0]], errors='coerce').fillna(6.0) if col_sympt else 6.0
 
-    # Caractéristiques pour Cox
+    # Caractéristiques pour le modèle de Cox
     features_cox = ['AGE', 'SEXE_NUM', 'hémoglobine', "Durée d'evolution des Symptom en Mois", 
                     'DIABETE_NUM', 'Metastases Hepatiques_NUM', 'Dénutrition_NUM', 'Traitement par chirurgie_NUM']
     
@@ -64,7 +63,7 @@ def init_models():
     
     return cph, log_reg, features_ml
 
-# Initialisation des modèles
+# Chargement des modèles au démarrage
 model_cox, model_lr, features_ml = init_models()
 
 @app.route('/', methods=['GET', 'POST'])
@@ -91,7 +90,7 @@ def home():
             'Traitement par chirurgie_NUM': chirurgie
         }])
         
-        # 1. Cox
+        # 1. Prédictions Cox
         surv_prob = model_cox.predict_survival_function(profil_cox)
         prediction_data = {
             "labels": list(surv_prob.index.astype(int)),
@@ -99,7 +98,7 @@ def home():
         }
         score_risque = round(float(model_cox.predict_partial_hazard(profil_cox).values[0]), 4)
         
-        # 2. Régression Logistique
+        # 2. Prédictions Régression Logistique
         profil_ml = profil_cox[features_ml]
         probabilite_ml = round(float(model_lr.predict_proba(profil_ml)[0][1]) * 100, 2)
 
